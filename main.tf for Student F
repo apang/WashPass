@@ -1,0 +1,235 @@
+npm install @nestjs/redis ioredis geolib uuid
+src/
+ ├── redis/
+ │    ├── redis.module.ts
+ │    └── redis.service.ts
+ ├── location/
+ │    ├── location.module.ts
+ │    ├── location.service.ts
+ │    └── geo.util.ts
+ ├── redemption/
+ │    ├── redemption.module.ts
+ │    ├── redemption.controller.ts
+ │    └── redemption.service.ts
+ ├── common/
+ │    └── guards/
+ │         └── location.guard.ts
+ └── main.ts
+ import { Module } from '@nestjs/common';
+import { RedisService } from './redis.service';
+
+@Module({
+  providers: [RedisService],
+  exports: [RedisService],
+})
+export class RedisModule {}
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import Redis from 'ioredis';
+
+@Injectable()
+export class RedisService implements OnModuleDestroy {
+  private readonly client: Redis;
+
+  constructor() {
+    this.client = new Redis({
+      host: process.env.REDIS_HOST || 'localhost',
+      port: parseInt(process.env.REDIS_PORT || '6379'),
+      password: process.env.REDIS_PASSWORD || undefined,
+      enableReadyCheck: true,
+      maxRetriesPerRequest: 3,
+    });
+  }
+
+  getClient(): Redis {
+    return this.client;
+  }
+
+  async onModuleDestroy() {
+    await this.client.quit();
+  }
+import { getDistance } from 'geolib';
+
+export function isWithinRadius(
+  userLat: number,
+  userLng: number,
+  stationLat: number,
+  stationLng: number,
+  radiusMeters = 200,
+): boolean {
+  const distance = getDistance(
+    { latitude: userLat, longitude: userLng },
+    { latitude: stationLat, longitude: stationLng },
+  );
+
+  return distance <= radiusMeters;
+}}import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { RedisService } from '../redis/redis.service';
+import { isWithinRadius } from './geo.util';
+import * as crypto from 'crypto';
+
+@Injectable()
+export class LocationService {
+  constructor(private readonly redis: RedisService) {}
+
+  async validateLocation(
+    userId: string,
+    stationId: string,
+    lat: number,
+    lng: number,
+    timestamp: number,
+  ) {
+    const now = Date.now();
+
+    if (now - timestamp > 60_000) {
+      throw new UnauthorizedException('Location timestamp expired');
+    }
+
+    // Load station coordinates (replace with DB lookup)
+    const station = await this.getStationCoordinates(stationId);
+
+    const isValid = isWithinRadius(
+      lat,
+      lng,
+      station.lat,
+      station.lng,
+      200,
+    );
+
+    if (!isValid) {
+      throw new UnauthorizedException('User not within station radius');
+    }
+
+    // Prevent replay
+    const replayKey = `loc:replay:${userId}:${timestamp}`;
+    const exists = await this.redis.getClient().get(replayKey);
+
+    if (exists) {
+      throw new UnauthorizedException('Location replay detected');
+    }
+
+    await this.redis.getClient().set(replayKey, '1', 'EX', 90);
+
+    return true;
+  }
+
+  private async getStationCoordinates(stationId: string) {
+    // Replace with DB call
+    return {
+      lat: 37.7749,
+      lng: -122.4194,
+    };
+  }
+
+  generateLocationSignature(payload: string) {
+    return crypto
+      .createHmac('sha256', process.env.LOCATION_SECRET!)
+      .update(payload)
+      .digest('hex');
+  }
+}import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { LocationService } from '../../location/location.service';
+
+@Injectable()
+export class LocationGuard implements CanActivate {
+  constructor(private readonly locationService: LocationService) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest();
+
+    const userId = request.user?.id;
+    const stationId = request.headers['x-station-id'];
+    const coords = request.headers['x-user-coordinates'];
+    const timestamp = Number(request.headers['x-location-timestamp']);
+
+    if (!userId || !stationId || !coords || !timestamp) {
+      throw new UnauthorizedException('Missing location headers');
+    }
+
+    const [lat, lng] = coords.split(',').map(Number);
+
+    await this.locationService.validateLocation(
+      userId,
+      stationId,
+      lat,
+      lng,
+      timestamp,
+    );
+
+    return true;
+  }
+}import { Injectable, ConflictException } from '@nestjs/common';
+import { RedisService } from '../redis/redis.service';
+import { v4 as uuidv4 } from 'uuid';
+
+@Injectable()
+export class RedemptionService {
+  constructor(private readonly redis: RedisService) {}
+
+  async issueCode(userId: string, stationId: string) {
+    const redis = this.redis.getClient();
+
+    // Rate limit
+    const rateKey = `redeem:rate:${userId}`;
+    const attempts = await redis.incr(rateKey);
+    if (attempts === 1) {
+      await redis.expire(rateKey, 60);
+    }
+
+    if (attempts > 5) {
+      throw new ConflictException('Rate limit exceeded');
+    }
+
+    // Lock issuance
+    const lockKey = `redeem:lock:${userId}`;
+    const lock = await redis.set(lockKey, '1', 'NX', 'EX', 5);
+
+    if (!lock) {
+      throw new ConflictException('Redemption already in progress');
+    }
+
+    const code = uuidv4().slice(0, 8).toUpperCase();
+
+    await redis.set(
+      `redeem:code:${code}`,
+      JSON.stringify({
+        userId,
+        stationId,
+        createdAt: Date.now(),
+      }),
+      'EX',
+      600,
+    );
+
+    return { code };
+  }
+}import { Controller, Post, UseGuards, Req } from '@nestjs/common';
+import { RedemptionService } from './redemption.service';
+import { LocationGuard } from '../common/guards/location.guard';
+
+@Controller('redemption')
+export class RedemptionController {
+  constructor(private readonly redemptionService: RedemptionService) {}
+
+  @Post('issue')
+  @UseGuards(LocationGuard)
+  async issue(@Req() req) {
+    const userId = req.user.id;
+    const stationId = req.headers['x-station-id'];
+
+    return this.redemptionService.issueCode(userId, stationId);
+  }
+}import { Module } from '@nestjs/common';
+import { LocationService } from './location.service';
+import { RedisModule } from '../redis/redis.module';
+
+@Module({
+  imports: [RedisModule],
+  providers: [LocationService],
+  exports: [LocationService],
+})
+export class LocationModule {}
