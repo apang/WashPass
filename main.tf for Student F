@@ -1,235 +1,352 @@
-npm install @nestjs/redis ioredis geolib uuid
-src/
- ├── redis/
- │    ├── redis.module.ts
- │    └── redis.service.ts
- ├── location/
- │    ├── location.module.ts
- │    ├── location.service.ts
- │    └── geo.util.ts
- ├── redemption/
- │    ├── redemption.module.ts
- │    ├── redemption.controller.ts
- │    └── redemption.service.ts
- ├── common/
- │    └── guards/
- │         └── location.guard.ts
- └── main.ts
- import { Module } from '@nestjs/common';
-import { RedisService } from './redis.service';
+1️⃣ Security Architecture Overview
 
-@Module({
-  providers: [RedisService],
-  exports: [RedisService],
-})
-export class RedisModule {}
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
-import Redis from 'ioredis';
+Goal: Prevent users from generating redemption codes from home or spoofed GPS locations.
 
+Flow:
+
+Member selects location.
+
+App retrieves device GPS coordinates.
+
+App verifies user is within 200 meters of wash station.
+
+Coordinates + timestamp are cryptographically signed.
+
+Sent as required header to GraphQL generateRedemptionCode.
+
+Backend validates:
+
+Distance <= 200m
+
+Timestamp < 60s old
+
+Not reused
+
+Device integrity check passed
+
+Only then issue QR code.
+
+This prevents:
+
+Desktop spoofing
+
+GPS tampering
+
+Replay attacks
+
+Remote code farming
+
+2️⃣ Anti-Spoofing Strategy
+
+You must assume users will try to fake location.
+
+Therefore:
+
+Required Layers
+Layer	Purpose
+GPS proximity check	Basic enforcement
+Timestamp validation	Prevent replay
+Device ID binding	Prevent header reuse
+JWT authentication	Member validation
+Server-side re-check	Never trust frontend
+IP + Geo anomaly detection	Fraud scoring
+Optional device integrity check	Advanced anti-spoof
+
+Frontend check is UX.
+Backend check is enforcement.
+
+3️⃣ Frontend Implementation
+Option A (Recommended): Amazon Location Service
+
+Entity reference required:
+
+Amazon Location Service
+
+Pros:
+
+AWS-native (aligns with your architecture)
+
+Cheaper at scale
+
+Easy integration with Cognito auth
+
+Option B: Google Maps
+
+Google Maps Platform
+
+Pros:
+
+Familiar tooling
+
+Excellent mobile SDKs
+
+Either is fine. Since your backend is AWS-based, I recommend Amazon Location.
+
+3.1 Install Location SDK (React Native)
+
+Example using Expo location:
+
+npm install expo-location
+3.2 Get User Coordinates
+import * as Location from 'expo-location';
+
+async function getUserLocation() {
+  const { status } = await Location.requestForegroundPermissionsAsync();
+  if (status !== 'granted') {
+    throw new Error('Location permission denied');
+  }
+
+  const location = await Location.getCurrentPositionAsync({
+    accuracy: Location.Accuracy.Highest
+  });
+
+  return {
+    latitude: location.coords.latitude,
+    longitude: location.coords.longitude,
+    timestamp: Date.now()
+  };
+}
+3.3 Distance Verification Script (200m Check)
+
+Use Haversine formula:
+
+function getDistanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000; // Earth radius in meters
+  const toRad = (value) => (value * Math.PI) / 180;
+
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+Usage:
+
+const distance = getDistanceMeters(
+  userLat,
+  userLng,
+  locationLat,
+  locationLng
+);
+
+if (distance > 200) {
+  throw new Error("You must be within 200 meters of this location.");
+}
+
+Frontend blocks UX.
+Backend will enforce again.
+
+3.4 Pass Coordinates to API (Required Header)
+
+When calling GraphQL:
+
+fetch('/graphql', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${jwt}`,
+    'x-washpass-lat': userLat.toString(),
+    'x-washpass-lng': userLng.toString(),
+    'x-washpass-timestamp': timestamp.toString(),
+    'x-washpass-device-id': deviceId
+  },
+  body: JSON.stringify({
+    query: GENERATE_REDEMPTION_MUTATION
+  })
+});
+
+This header becomes mandatory.
+
+4️⃣ Backend Enforcement (NestJS)
+
+This is critical.
+
+Never trust frontend validation.
+
+4.1 Create GeoGuard Middleware
 @Injectable()
-export class RedisService implements OnModuleDestroy {
-  private readonly client: Redis;
-
-  constructor() {
-    this.client = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      password: process.env.REDIS_PASSWORD || undefined,
-      enableReadyCheck: true,
-      maxRetriesPerRequest: 3,
-    });
-  }
-
-  getClient(): Redis {
-    return this.client;
-  }
-
-  async onModuleDestroy() {
-    await this.client.quit();
-  }
-import { getDistance } from 'geolib';
-
-export function isWithinRadius(
-  userLat: number,
-  userLng: number,
-  stationLat: number,
-  stationLng: number,
-  radiusMeters = 200,
-): boolean {
-  const distance = getDistance(
-    { latitude: userLat, longitude: userLng },
-    { latitude: stationLat, longitude: stationLng },
-  );
-
-  return distance <= radiusMeters;
-}}import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { RedisService } from '../redis/redis.service';
-import { isWithinRadius } from './geo.util';
-import * as crypto from 'crypto';
-
-@Injectable()
-export class LocationService {
-  constructor(private readonly redis: RedisService) {}
-
-  async validateLocation(
-    userId: string,
-    stationId: string,
-    lat: number,
-    lng: number,
-    timestamp: number,
-  ) {
-    const now = Date.now();
-
-    if (now - timestamp > 60_000) {
-      throw new UnauthorizedException('Location timestamp expired');
-    }
-
-    // Load station coordinates (replace with DB lookup)
-    const station = await this.getStationCoordinates(stationId);
-
-    const isValid = isWithinRadius(
-      lat,
-      lng,
-      station.lat,
-      station.lng,
-      200,
-    );
-
-    if (!isValid) {
-      throw new UnauthorizedException('User not within station radius');
-    }
-
-    // Prevent replay
-    const replayKey = `loc:replay:${userId}:${timestamp}`;
-    const exists = await this.redis.getClient().get(replayKey);
-
-    if (exists) {
-      throw new UnauthorizedException('Location replay detected');
-    }
-
-    await this.redis.getClient().set(replayKey, '1', 'EX', 90);
-
-    return true;
-  }
-
-  private async getStationCoordinates(stationId: string) {
-    // Replace with DB call
-    return {
-      lat: 37.7749,
-      lng: -122.4194,
-    };
-  }
-
-  generateLocationSignature(payload: string) {
-    return crypto
-      .createHmac('sha256', process.env.LOCATION_SECRET!)
-      .update(payload)
-      .digest('hex');
-  }
-}import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { LocationService } from '../../location/location.service';
-
-@Injectable()
-export class LocationGuard implements CanActivate {
-  constructor(private readonly locationService: LocationService) {}
+export class GeoGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest();
 
-    const userId = request.user?.id;
-    const stationId = request.headers['x-station-id'];
-    const coords = request.headers['x-user-coordinates'];
-    const timestamp = Number(request.headers['x-location-timestamp']);
+    const ctx = GqlExecutionContext.create(context);
+    const req = ctx.getContext().req;
 
-    if (!userId || !stationId || !coords || !timestamp) {
-      throw new UnauthorizedException('Missing location headers');
+    const lat = parseFloat(req.headers['x-washpass-lat']);
+    const lng = parseFloat(req.headers['x-washpass-lng']);
+    const timestamp = parseInt(req.headers['x-washpass-timestamp']);
+
+    if (!lat || !lng || !timestamp) {
+      throw new ForbiddenException('Location verification required');
     }
 
-    const [lat, lng] = coords.split(',').map(Number);
+    const now = Date.now();
+    if (now - timestamp > 60000) {
+      throw new ForbiddenException('Location timestamp expired');
+    }
 
-    await this.locationService.validateLocation(
-      userId,
-      stationId,
+    const location = await this.locationService.getLocationById(
+      ctx.getArgs().locationId
+    );
+
+    const distance = this.geoService.getDistanceMeters(
       lat,
       lng,
-      timestamp,
+      location.latitude,
+      location.longitude
     );
+
+    if (distance > 200) {
+      throw new ForbiddenException('Not within authorized proximity');
+    }
 
     return true;
   }
-}import { Injectable, ConflictException } from '@nestjs/common';
-import { RedisService } from '../redis/redis.service';
-import { v4 as uuidv4 } from 'uuid';
+}
 
-@Injectable()
-export class RedemptionService {
-  constructor(private readonly redis: RedisService) {}
+Apply to:
 
-  async issueCode(userId: string, stationId: string) {
-    const redis = this.redis.getClient();
+generateRedemptionCode mutation
+5️⃣ Map View Implementation
 
-    // Rate limit
-    const rateKey = `redeem:rate:${userId}`;
-    const attempts = await redis.incr(rateKey);
-    if (attempts === 1) {
-      await redis.expire(rateKey, 60);
-    }
+Frontend requirement:
 
-    if (attempts > 5) {
-      throw new ConflictException('Rate limit exceeded');
-    }
+"Create a Map View showing nearest participating locations."
 
-    // Lock issuance
-    const lockKey = `redeem:lock:${userId}`;
-    const lock = await redis.set(lockKey, '1', 'NX', 'EX', 5);
+5.1 Display Map
 
-    if (!lock) {
-      throw new ConflictException('Redemption already in progress');
-    }
+Using Amazon Location Map SDK:
 
-    const code = uuidv4().slice(0, 8).toUpperCase();
+<MapView
+  style={{ flex: 1 }}
+  initialRegion={{
+    latitude: userLat,
+    longitude: userLng,
+    latitudeDelta: 0.01,
+    longitudeDelta: 0.01
+  }}
+>
+  {locations.map((loc) => (
+    <Marker
+      key={loc.id}
+      coordinate={{
+        latitude: loc.latitude,
+        longitude: loc.longitude
+      }}
+      title={loc.name}
+    />
+  ))}
+</MapView>
+5.2 Nearest Location Query
 
-    await redis.set(
-      `redeem:code:${code}`,
-      JSON.stringify({
-        userId,
-        stationId,
-        createdAt: Date.now(),
-      }),
-      'EX',
-      600,
-    );
+GraphQL query:
 
-    return { code };
-  }
-}import { Controller, Post, UseGuards, Req } from '@nestjs/common';
-import { RedemptionService } from './redemption.service';
-import { LocationGuard } from '../common/guards/location.guard';
+nearbyLocations(lat, lng, radius)
 
-@Controller('redemption')
-export class RedemptionController {
-  constructor(private readonly redemptionService: RedemptionService) {}
+Backend sorts by:
 
-  @Post('issue')
-  @UseGuards(LocationGuard)
-  async issue(@Req() req) {
-    const userId = req.user.id;
-    const stationId = req.headers['x-station-id'];
+ORDER BY distance ASC
+LIMIT 20
 
-    return this.redemptionService.issueCode(userId, stationId);
-  }
-}import { Module } from '@nestjs/common';
-import { LocationService } from './location.service';
-import { RedisModule } from '../redis/redis.module';
+Use PostGIS or calculate in memory.
 
-@Module({
-  imports: [RedisModule],
-  providers: [LocationService],
-  exports: [LocationService],
-})
-export class LocationModule {}
+6️⃣ Fraud Prevention Hardening (Highly Recommended)
+
+Basic GPS check is NOT enough.
+
+Add:
+
+1️⃣ Replay Attack Prevention
+
+Store hash of:
+
+userId + timestamp + lat + lng
+
+Reject duplicates within 60s window.
+
+2️⃣ IP vs GPS Anomaly
+
+If:
+
+IP geolocation = Texas
+
+GPS = California
+
+Flag for fraud review.
+
+3️⃣ Device Binding
+
+Generate unique device fingerprint:
+
+UUID stored in SecureStore
+
+Require same device for redemption + rating submission.
+
+4️⃣ Jailbreak / Root Detection (Optional)
+
+Use:
+
+react-native-device-info
+
+JailMonkey
+
+Block redemption if device integrity fails.
+
+7️⃣ Security Architecture Summary
+
+Redemption allowed only if:
+
+✔ Valid JWT
+✔ Within 200m
+✔ Timestamp < 60s
+✔ Device ID present
+✔ Not replayed
+✔ Not fraud-flagged
+
+This satisfies the PRD security section and closes GPS spoof gap.
+
+8️⃣ Deliverables Checklist
+
+You (Location Verification Owner) must deliver:
+
+Frontend:
+
+ Location permission flow
+
+ Haversine validation
+
+ Header injection
+
+ Map View
+
+ Nearest location sorting
+
+ Upgrade proximity error messaging
+
+Backend:
+
+ GeoGuard middleware
+
+ Distance calculation service
+
+ Timestamp validation
+
+ Replay prevention store (Redis)
+
+ Logging for fraud dashboard
+
+Documentation:
+
+ Update API contract to mark headers REQUIRED
+
+ Update Security section in PRD
+
+ Add new fraud KPI: "Spoof Attempt Rate"
