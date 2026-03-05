@@ -1,0 +1,5 @@
+[]
+
+| Tool     | File       | Vulnerability       | Severity | Description           | Fix         | Status |
+| -------- | ---------- | ------------------- | -------- | --------------------- | ----------- | ------ |
+| GitLeaks | Repository | No secrets detected | Low      | Secret scan completed | None needed | Secure |
