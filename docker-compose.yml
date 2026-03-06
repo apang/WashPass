@@ -2,36 +2,69 @@ version: "3.8"
 
 services:
   server:
-    build: ./server
+    build:
+      context: ./server
     container_name: washpass_server
     ports:
       - "5000:5000"
     volumes:
       - ./server:/app
       - /app/node_modules
-    env_file:
-      - .env
     depends_on:
-      - mongo
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      - PORT=5000
+      - DATABASE_URL=postgres://washpass:washpass@postgres:5432/washpass
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev-jwt-secret-change-in-production
+      - JWT_REFRESH_SECRET=dev-jwt-refresh-secret-change-in-production
+      - FRONTEND_URL=http://localhost:3000
+      - NODE_ENV=development
+    command: npm run start:dev
 
-  client:
-    build: ./client
-    container_name: washpass_client
+  client-operator:
+    build:
+      context: ./client-operator
+    container_name: washpass_client_operator
     ports:
-      - "5173:5173"
+      - "3000:3000"
     volumes:
-      - ./client:/app
+      - ./client-operator:/app
       - /app/node_modules
+      - /app/.next
     depends_on:
       - server
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:5000
 
-  mongo:
-    image: mongo:6
-    container_name: washpass_mongo
+  postgres:
+    image: postgres:15-alpine
+    container_name: washpass_postgres
     ports:
-      - "27017:27017"
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: washpass
+      POSTGRES_PASSWORD: washpass
+      POSTGRES_DB: washpass
     volumes:
-      - mongo_data:/data/db
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U washpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: washpass_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
 
 volumes:
-  mongo_data:
+  postgres_data:
+  redis_data:
