@@ -1,0 +1,295 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ──────────────────────────────────────────────────────────────
+
+enum UserRole {
+  MEMBER
+  OPERATOR_ADMIN
+  OPERATOR_SCANNER
+  ADMIN
+}
+
+enum MembershipStatus {
+  ACTIVE
+  PAUSED
+  SUSPENDED
+  CANCELLED
+  PAYMENT_PENDING
+}
+
+enum PlanTier {
+  BASIC
+  PLUS
+  PREMIUM
+}
+
+enum BillingCycle {
+  MONTHLY
+  ANNUAL
+}
+
+enum RedemptionStatus {
+  PENDING
+  VALIDATED
+  EXPIRED
+  CANCELLED
+}
+
+enum DisputeStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  OPERATOR_RESPONDING
+  RESOLVED_CREDIT
+  RESOLVED_NO_ACTION
+  DAMAGE_CLAIM
+}
+
+enum LocationStatus {
+  ACTIVE
+  TEMPORARILY_CLOSED
+  CLOSED
+  PENDING_APPROVAL
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ── Models ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  role         UserRole
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  member        Member?
+  operator      Operator?
+  operatorStaff OperatorStaff?
+  refreshTokens RefreshToken[]
+}
+
+model Member {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  fullName         String
+  phone            String?
+  stripeCustomerId String?
+
+  user        User          @relation(fields: [userId], references: [id])
+  membership  Membership?
+  vehicles    Vehicle[]
+  redemptions Redemption[]
+  ratings     Rating[]
+  disputes    Dispute[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Vehicle {
+  id           String  @id @default(uuid())
+  memberId     String
+  make         String
+  model        String
+  year         Int?
+  color        String?
+  licensePlate String?
+  isDefault    Boolean @default(false)
+
+  member Member @relation(fields: [memberId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Plan {
+  id            String       @id @default(uuid())
+  tier          PlanTier
+  cycle         BillingCycle
+  name          String
+  priceMonthly  Int          // cents
+  washesPerMonth Int
+  stripePriceId String?
+  geoZone       String       @default("zone_2")
+  isActive      Boolean      @default(true)
+
+  memberships Membership[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tier, cycle, geoZone])
+}
+
+model Membership {
+  id                 String           @id @default(uuid())
+  memberId           String           @unique
+  planId             String
+  status             MembershipStatus @default(PAYMENT_PENDING)
+  stripeSubId        String?
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  washesRemaining    Int              @default(0)
+  rolloverWashes     Int              @default(0)
+  pausedUntil        DateTime?
+  cancelledAt        DateTime?
+
+  member Member @relation(fields: [memberId], references: [id])
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Operator {
+  id              String  @id @default(uuid())
+  userId          String  @unique
+  businessName    String
+  stripeAccountId String?
+  isVerified      Boolean @default(false)
+
+  user      User            @relation(fields: [userId], references: [id])
+  locations Location[]
+  staff     OperatorStaff[]
+  payouts   Payout[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model OperatorStaff {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  operatorId String
+  role       UserRole @default(OPERATOR_SCANNER)
+  isActive   Boolean  @default(true)
+
+  user     User     @relation(fields: [userId], references: [id])
+  operator Operator @relation(fields: [operatorId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Location {
+  id           String         @id @default(uuid())
+  operatorId   String
+  name         String
+  address      String
+  city         String
+  state        String
+  zipCode      String
+  latitude     Float
+  longitude    Float
+  status       LocationStatus @default(PENDING_APPROVAL)
+  phone        String?
+  washTypes    Json?          // e.g. ["basic", "premium", "detail"]
+  hours        Json?          // e.g. { "mon": "8:00-18:00", ... }
+  photos       String[]
+  avgRating    Float          @default(0)
+  totalRatings Int            @default(0)
+
+  operator    Operator     @relation(fields: [operatorId], references: [id])
+  redemptions Redemption[]
+  ratings     Rating[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Redemption {
+  id            String           @id @default(uuid())
+  memberId      String
+  locationId    String
+  code          String           @unique
+  numericCode   String
+  status        RedemptionStatus @default(PENDING)
+  upgradeAmount Int?             // cents
+  validatedAt   DateTime?
+  expiresAt     DateTime
+
+  member   Member   @relation(fields: [memberId], references: [id])
+  location Location @relation(fields: [locationId], references: [id])
+  rating   Rating?
+  dispute  Dispute?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([memberId, createdAt])
+}
+
+model Rating {
+  id           String @id @default(uuid())
+  memberId     String
+  locationId   String
+  redemptionId String @unique
+  stars        Int    // 1-5
+  text         String?
+
+  member     Member     @relation(fields: [memberId], references: [id])
+  location   Location   @relation(fields: [locationId], references: [id])
+  redemption Redemption @relation(fields: [redemptionId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Dispute {
+  id           String        @id @default(uuid())
+  memberId     String
+  redemptionId String        @unique
+  status       DisputeStatus @default(SUBMITTED)
+  type         String        // e.g. "quality", "damage", "service"
+  description  String
+  photos       String[]
+  resolution   String?
+
+  member     Member     @relation(fields: [memberId], references: [id])
+  redemption Redemption @relation(fields: [redemptionId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payout {
+  id             String       @id @default(uuid())
+  operatorId     String
+  amount         Int          // cents
+  status         PayoutStatus @default(PENDING)
+  periodStart    DateTime
+  periodEnd      DateTime
+  stripePayoutId String?
+  paidAt         DateTime?
+
+  operator Operator @relation(fields: [operatorId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}

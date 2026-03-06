@@ -1,5 +1,0 @@
-{
-  "watch": ["src"],
-  "ext": "js,json",
-  "ignore": ["../client", "../node_modules", "../Dockerfile*", "../docker-compose.yml"]
-}
