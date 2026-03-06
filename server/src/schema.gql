@@ -1,0 +1,155 @@
+# ------------------------------------------------------
+# THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
+# ------------------------------------------------------
+
+input CreateVehicleInput {
+  color: String
+  isDefault: Boolean! = false
+  licensePlate: String
+  make: String!
+  model: String!
+  year: Int
+}
+
+"""
+A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
+"""
+scalar DateTime
+
+type DisputeModel {
+  createdAt: DateTime!
+  description: String!
+  id: ID!
+  photos: [String!]
+  resolution: String
+  status: String!
+  type: String!
+}
+
+type LocationModel {
+  address: String!
+  avgRating: Float!
+  city: String!
+  distance: Float
+  id: ID!
+  latitude: Float!
+  longitude: Float!
+  name: String!
+  phone: String
+  photos: [String!]
+  state: String!
+  status: String!
+  totalRatings: Int!
+  zipCode: String!
+}
+
+type MemberModel {
+  createdAt: DateTime!
+  email: String!
+  fullName: String!
+  id: ID!
+  phone: String
+}
+
+type MembershipModel {
+  cancelledAt: DateTime
+  currentPeriodEnd: DateTime
+  id: ID!
+  pausedUntil: DateTime
+  planCycle: String!
+  planName: String!
+  planTier: String!
+  rolloverWashes: Int!
+  status: String!
+  washesRemaining: Int!
+}
+
+type Mutation {
+  addVehicle(input: CreateVehicleInput!): VehicleModel!
+  cancelMembership: MembershipModel!
+  generateRedemptionCode(locationId: String!): RedemptionCodeResult!
+  pauseMembership(durationDays: Int! = 30): MembershipModel!
+  removeVehicle(vehicleId: String!): VehicleModel!
+  reportIssue(description: String!, photos: [String!], redemptionId: String!, type: String!): DisputeModel!
+  resumeMembership: MembershipModel!
+  setDefaultVehicle(vehicleId: String!): VehicleModel!
+  submitRating(redemptionId: String!, stars: Int!, text: String): RatingModel!
+  subscribe(planId: String!): SubscribeResult!
+  updateMemberProfile(fullName: String, phone: String): MemberModel!
+}
+
+type NearbyLocationsResult {
+  hasMore: Boolean!
+  locations: [LocationModel!]!
+  nextCursor: String
+}
+
+type PlanModel {
+  cycle: String!
+  geoZone: String!
+  id: ID!
+  isActive: Boolean!
+  name: String!
+  priceMonthly: Int!
+  tier: String!
+  washesPerMonth: Int!
+}
+
+type Query {
+  location(id: String!): LocationModel!
+  memberProfile: MemberModel!
+  myMembership: MembershipModel
+  myVehicles: [VehicleModel!]!
+  nearbyLocations(cursor: String, lat: Float!, limit: Int = 25, lng: Float!, radius: Float = 25): NearbyLocationsResult!
+  plan(id: String!): PlanModel!
+  plans(geoZone: String): [PlanModel!]!
+  washHistory(cursor: String, limit: Int = 25): WashHistoryResult!
+}
+
+type RatingModel {
+  createdAt: DateTime!
+  id: ID!
+  stars: Int!
+  text: String
+}
+
+type RedemptionCodeResult {
+  code: String!
+  expiresAt: DateTime!
+  numericCode: String!
+  qrDataUrl: String!
+}
+
+type RedemptionModel {
+  code: String!
+  createdAt: DateTime!
+  expiresAt: DateTime!
+  id: ID!
+  locationName: String
+  numericCode: String!
+  qrDataUrl: String
+  status: String!
+  upgradeAmount: Int
+  validatedAt: DateTime
+}
+
+type SubscribeResult {
+  checkoutUrl: String
+  sessionId: String
+}
+
+type VehicleModel {
+  color: String
+  id: ID!
+  isDefault: Boolean!
+  licensePlate: String
+  make: String!
+  model: String!
+  year: Int
+}
+
+type WashHistoryResult {
+  hasMore: Boolean!
+  items: [RedemptionModel!]!
+  nextCursor: String
+}
