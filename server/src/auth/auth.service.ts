@@ -6,7 +6,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'node:crypto';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RedisService } from '../redis/redis.service.js';
@@ -75,7 +75,7 @@ export class AuthService {
   }
 
   async login(user: { userId: string; email: string; role: string }) {
-    const jti = uuidv4();
+    const jti = randomUUID();
 
     const accessToken = this.jwtService.sign(
       { sub: user.userId, email: user.email, role: user.role, jti },
@@ -85,7 +85,7 @@ export class AuthService {
       },
     );
 
-    const refreshToken = uuidv4();
+    const refreshToken = randomUUID();
     const refreshHash = await bcrypt.hash(refreshToken, 10);
 
     await this.prisma.refreshToken.create({
