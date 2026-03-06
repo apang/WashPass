@@ -1,0 +1,47 @@
+tags = {
+  Project     = "washpass"
+  Environment = "dev"
+  Owner       = "student-b"
+}
+
+# API target to protect with AWS WAF.
+# API Gateway stage ARN example:
+# arn:aws:apigateway:us-west-2::/restapis/abcd1234/stages/prod
+waf_association_resource_arn = "arn:aws:apigateway:us-west-2::/restapis/replace-me/stages/prod"
+waf_rate_limit               = 2000
+
+# Network monitoring target.
+vpc_id = "vpc-0123456789abcdef0"
+
+# Database secret payload values.
+db_host = "student-b-db.abcdefghijkl.us-west-2.rds.amazonaws.com"
+db_port = 5432
+db_name = "washpass"
+
+# Lock the API role to exact DB/Redis identities.
+rds_db_user_arns = [
+  "arn:aws:rds-db:us-west-2:123456789012:dbuser:db-ABCDEFGHIJKLMNOPQ/student_b_api"
+]
+
+redis_iam_resource_arns = [
+  "arn:aws:elasticache:us-west-2:123456789012:replicationgroup:student-b-redis"
+]
+
+# Optional: create more least-privilege service roles.
+additional_service_roles = {
+  student-b-worker-role = {
+    principal_service = "ecs-tasks.amazonaws.com"
+    policy_statements = [
+      {
+        sid = "ReadDbSecret"
+        actions = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        resources = [
+          "arn:aws:secretsmanager:us-west-2:123456789012:secret:student-b/api/db-credentials-xxxxxx"
+        ]
+      }
+    ]
+  }
+}
